@@ -1,3 +1,6 @@
+Name: Connor Whitesell
+Set: 1c
+
 Self-graded Assignment 1 Checklist
 
     Criteria	
