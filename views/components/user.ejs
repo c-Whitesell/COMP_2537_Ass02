@@ -1,0 +1,21 @@
+<tr>
+  <td><strong><%= user.name %></strong></td>
+  <td><%= user.email %></td>
+  <td>
+    <span class="badge bg-<%= user.user_type === 'admin' ? 'danger' : 'info' %>">
+      <%= user.user_type %>
+    </span>
+  </td>
+  <td>
+    <% if (user.user_type !== 'admin') { %>
+      <form action="/promote/<%= user.email %>" method="post" style="display: inline;">
+        <button class="btn btn-sm btn-success" type="submit">Promote to Admin</button>
+      </form>
+    <% } %>
+    <% if (user.user_type === 'admin') { %>
+      <form action="/demote/<%= user.email %>" method="post" style="display: inline;">
+        <button class="btn btn-sm btn-warning" type="submit">Demote to User</button>
+      </form>
+    <% } %>
+  </td>
+</tr>

@@ -11,6 +11,8 @@ const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
+app.set('view engine', 'ejs');
+
 const PORT = process.env.PORT || 3000;
 const expireTime = 60 * 60 * 1000;
 
@@ -28,7 +30,6 @@ connectDB();
 app.use(
   session({
     secret: process.env.NODE_SESSION_SECRET,
-    // store: MongoStore.create({ mongoUrl: process.env.MONGO_URI }),
     store: MongoStore.create({
       mongoUrl: process.env.MONGO_URI,
       crypto: {
@@ -41,32 +42,33 @@ app.use(
   }),
 );
 
+function isLoggedIn(req, res, next) {
+  if (!req.session.authenticated) {
+    return res.redirect('/login');
+  }
+  next();
+}
+
+function isAdmin(req, res, next) {
+  if (!req.session.authenticated || req.session.user_type !== 'admin') {
+    res.status(403);
+    return res.render('unauthorized', {
+      name: req.session.name || undefined,
+    });
+  }
+  next();
+}
+
 app.get('/', (req, res) => {
   if (req.session.authenticated) {
-    res.send(`
-      <h1>Hello ${req.session.name}</h1>
-      <a href="/members">Members Area</a><br>
-      <a href="/logout">Logout</a>
-    `);
+    res.render('index', { name: req.session.name });
   } else {
-    res.send(`
-      <h1>Home</h1>
-      <a href="/signup">Signup</a><br>
-      <a href="/login">Login</a>
-    `);
+    res.render('index');
   }
 });
 
 app.get('/signup', (req, res) => {
-  res.send(`
-    <h1>Signup</h1>
-    <form action='/signup' method='post'>
-      <input name='name' placeholder='Name'><br>
-      <input name='email' placeholder='Email'><br>
-      <input name='password' type='password' placeholder='Password'><br>
-      <button>Signup</button>
-    </form>
-  `);
+  res.render('signup');
 });
 
 app.post('/signup', async (req, res) => {
@@ -80,29 +82,40 @@ app.post('/signup', async (req, res) => {
 
   const validation = schema.validate({ name, email, password });
   if (validation.error) {
-    return res.send('Invalid input');
+    const errorMessage =
+      validation.error.details[0].context.label === 'name'
+        ? 'Please provide a name.'
+        : validation.error.details[0].context.label === 'email'
+          ? 'Please provide an email address.'
+          : 'Please provide a password.';
+    return res.render('signup', { error: errorMessage });
+  }
+
+  const existingUser = await users.findOne({ email });
+  if (existingUser) {
+    return res.render('signup', {
+      error: 'User with that email already exists.',
+    });
   }
 
   const hash = await bcrypt.hash(password, 10);
-
-  await users.insertOne({ name, email, password: hash });
+  await users.insertOne({
+    name,
+    email,
+    password: hash,
+    user_type: 'user',
+  });
 
   req.session.authenticated = true;
   req.session.name = name;
   req.session.email = email;
+  req.session.user_type = 'user';
 
   res.redirect('/members');
 });
 
 app.get('/login', (req, res) => {
-  res.send(`
-    <h1>Login</h1>
-    <form action='/loggingin' method='post'>
-      <input name='email' placeholder='Email'><br>
-      <input name='password' type='password' placeholder='Password'><br>
-      <button>Login</button>
-    </form>
-  `);
+  res.render('login');
 });
 
 app.post('/loggingin', async (req, res) => {
@@ -115,39 +128,73 @@ app.post('/loggingin', async (req, res) => {
 
   const validation = schema.validate({ email, password });
   if (validation.error) {
-    return res.redirect('/login');
+    return res.render('login', { error: 'Please provide email and password.' });
   }
 
   const user = await users.findOne({ email });
-
   if (!user) {
-    return res.send('User not found');
+    return res.render('login', {
+      error: 'User and password combination not found.',
+    });
   }
 
   const valid = await bcrypt.compare(password, user.password);
-
   if (!valid) {
-    return res.send('Invalid password');
+    return res.render('login', {
+      error: 'User and password combination not found.',
+    });
   }
 
   req.session.authenticated = true;
   req.session.name = user.name;
   req.session.email = email;
+  req.session.user_type = user.user_type || 'user';
 
   res.redirect('/members');
 });
 
-app.get('/members', (req, res) => {
-  if (!req.session.authenticated) return res.redirect('/');
-
+app.get('/members', isLoggedIn, (req, res) => {
   const images = ['img1.png', 'img2.png', 'img3.png'];
-  const random = images[Math.floor(Math.random() * images.length)];
+  res.render('members', { name: req.session.name, images });
+});
 
-  res.send(`
-    <h1>Hello ${req.session.name}</h1>
-    <img src="/images/${random}" width="300"/><br>
-    <a href="/logout">Logout</a>
-  `);
+app.get('/admin', isLoggedIn, isAdmin, async (req, res) => {
+  const allUsers = await users.find({}).toArray();
+  res.render('admin', { name: req.session.name, users: allUsers });
+});
+
+app.post('/promote/:email', isLoggedIn, isAdmin, async (req, res) => {
+  const userEmail = req.params.email;
+
+  const schema = Joi.object({
+    email: Joi.string().email().required(),
+  });
+
+  const validation = schema.validate({ email: userEmail });
+  if (validation.error) {
+    return res.status(400).send('Invalid email format');
+  }
+
+  await users.updateOne({ email: userEmail }, { $set: { user_type: 'admin' } });
+
+  res.redirect('/admin');
+});
+
+app.post('/demote/:email', isLoggedIn, isAdmin, async (req, res) => {
+  const userEmail = req.params.email;
+
+  const schema = Joi.object({
+    email: Joi.string().email().required(),
+  });
+
+  const validation = schema.validate({ email: userEmail });
+  if (validation.error) {
+    return res.status(400).send('Invalid email format');
+  }
+
+  await users.updateOne({ email: userEmail }, { $set: { user_type: 'user' } });
+
+  res.redirect('/admin');
 });
 
 app.get('/logout', (req, res) => {
@@ -157,7 +204,7 @@ app.get('/logout', (req, res) => {
 });
 
 app.use((req, res) => {
-  res.status(404).send('Page not found');
+  res.status(404).render('404');
 });
 
 app.listen(PORT, () => {
